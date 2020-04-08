@@ -5,7 +5,7 @@ em-algorithm-rcv: Using a mixture model and the EM algorithm to analyze voter pr
 
 ordinal-vaccines: Using an ordinal regression model to analyze how opinions about the risks of vaccines vary among demographic groups and developed a predictive model. Final project for Generalized Linear Models course.
 
-survival-function-sim: Comparing the performance of a survival function estimator where the censoring distribution is known to the Gill and Efron Kaplan-Meier estimators using a simulation study. Final project for Survival Analysis course.
+survival-function-sim: Comparing the performance of a survival function estimator where the censoring distribution is known to the Gill and Efron Kaplan-Meier estimators using a simulation study. Final collaborative project for Survival Analysis course.
 
 taxi-bigquery-spark: Analysis of 2013 NYC taxi trip and fare data (approximately 20 GB combined) using Google Cloud tools, including BigQuery, and PySpark. Final project for Data Science Tools & Programming course.
 
