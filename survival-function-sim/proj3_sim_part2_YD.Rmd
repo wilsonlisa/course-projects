@@ -1,0 +1,1254 @@
+---
+title: "Survival Simulation_part 2"
+author: "Ying Dai"
+date: "2/28/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(survival)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(bmixture)
+```
+
+```{r}
+set.seed(27)
+
+# nsamp is the sample size and n is the number of observations generated from some specific distribution
+n <- 100
+nsamp <- 10000
+
+X <- matrix(nrow=3*n, ncol=nsamp)
+C <- matrix(nrow=3*n, ncol=nsamp)
+
+
+for (i in 1:nsamp){
+    X[1:100, i] <- rexp(n=100, rate=0.02)
+    C[1:100, i] <- rmixgamma(n=100, weight = c(0.1, 0.3, 0.6),
+                             alpha = c(10, 20, 40), beta = c(1.5, 1.5, 1.5))
+    
+    X[101:200, i] <- rweibull(n=100, 0.5, 25)
+    C[101:200, i] <- rmixgamma(n=100, weight = c(1/3, 1/3, 1/3),
+                             alpha = c(10, 20, 40), beta = c(7, 2, 1))
+    
+    X[201:300, i] <- rnorm(n=100, 50, 50)
+    C[201:300, i] <- rmixgamma(n=100, weight = c(0.5, 0.3, 0.2),
+                             alpha = c(10, 20, 40), beta = c(6, 2, 1))
+}
+
+# T_i = min(X_i, C_i)
+Ti <- matrix(nrow=9*n, ncol=nsamp)
+
+for (i in 1:nsamp){
+    for (j in 1:n){
+        # X is Exp, weight = (0.1, 0.3, 0.6), alpha = (10, 20, 40), beta = (1.5, 1.5, 1.5)
+        Ti[j, i] <- min(X[j, i], C[j, i]) 
+        # X is Exp, weight = (1/3, 1/3, 1/3), alpha = (10, 20, 40), beta = (7, 2, 1)
+        Ti[j+100, i] <- min(X[j, i], C[j+100, i]) 
+        # X is Exp, weight = (0.5, 0.3, 0.2), alpha = (10, 20, 40), beta = (6, 2, 1)
+        Ti[j+200, i] <- min(X[j, i], C[j+200, i]) 
+        
+        # X is Weib, weight = (0.1, 0.3, 0.6), alpha = (10, 20, 40), beta = (1.5, 1.5, 1.5)
+        Ti[j+300, i] <- min(X[j+100, i], C[j, i]) 
+        # X is Weib, weight = (1/3, 1/3, 1/3), alpha = (10, 20, 40), beta = (7, 2, 1)
+        Ti[j+400, i] <- min(X[j+100, i], C[j+100, i]) 
+        # X is Weib, weight = (0.5, 0.3, 0.2), alpha = (10, 20, 40), beta = (6, 2, 1)
+        Ti[j+500, i] <- min(X[j+100, i], C[j+200, i]) 
+        
+        # X is Normal, weight = (0.1, 0.3, 0.6), alpha = (10, 20, 40), beta = (1.5, 1.5, 1.5)
+        Ti[j+600, i] <- min(X[j+200, i], C[j, i]) 
+        # X is Normal, weight = (1/3, 1/3, 1/3), alpha = (10, 20, 40), beta = (7, 2, 1)
+        Ti[j+700, i] <- min(X[j+200, i], C[j+100, i]) 
+        # X is Normal, weight = (0.5, 0.3, 0.2), alpha = (10, 20, 40), beta = (6, 2, 1)
+        Ti[j+800, i] <- min(X[j+200, i], C[j+200, i]) 
+    }
+}
+
+del <- matrix(nrow=9*n, ncol=nsamp)
+
+for (i in 1:nsamp){
+    for (j in 1:n){
+        del[j, i] <- ifelse(X[j, i] < C[j, i], 1, 0)
+        del[j+100, i] <- ifelse(X[j, i] < C[j+100, i], 1, 0)
+        del[j+200, i] <- ifelse(X[j, i] < C[j+200, i], 1, 0)
+        
+        del[j+300, i] <- ifelse(X[j+100, i] < C[j, i], 1, 0)
+        del[j+400, i] <- ifelse(X[j+100, i] < C[j+100, i], 1, 0)
+        del[j+500, i] <- ifelse(X[j+100, i] < C[j+200, i], 1, 0)
+        
+        del[j+600, i] <- ifelse(X[j+200, i] < C[j, i], 1, 0)
+        del[j+700, i] <- ifelse(X[j+200, i] < C[j+100, i], 1, 0)
+        del[j+800, i] <- ifelse(X[j+200, i] < C[j+200, i], 1, 0)
+    }
+}
+
+```
+
+```{r, eval=FALSE}
+# cumulative density function of mixture gamma distribution
+pmixgamma <- function(x, weight, alpha, beta){
+  len <-  length(weight)
+  pmixg <- 0
+  for (i in 1:len) {
+    pmixg <- pmixg + weight[i] * pgamma(x, shape = alpha[i], scale = beta[i])
+  }
+  
+  return(pmixg)
+}
+
+# X is Exp, weight = (0.1, 0.3, 0.6), alpha = (10, 20, 40), beta = (1.5, 1.5, 1.5)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pexp, n = 100, args = list(rate = 0.02),
+                aes(col = "Exponential(.02)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(0.1, 0.3, 0.6),
+                             alpha = c(10, 20, 40), beta = c(1.5, 1.5, 1.5)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Exponential(.02)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+
+# X is Exp, weight = (1/3, 1/3, 1/3), alpha = (10, 20, 40), beta = (7, 2, 1)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pexp, n = 100, args = list(rate = 0.02),
+                aes(col = "Exponential(.02)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(1/3, 1/3, 1/3),
+                             alpha = c(10, 20, 40), beta = c(7, 2, 1)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Exponential(.02)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+
+# X is Exp, weight = (0.5, 0.3, 0.2), alpha = (10, 20, 40), beta = (6, 2, 1)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pexp, n = 100, args = list(rate = 0.02),
+                aes(col = "Exponential(.02)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(0.5, 0.3, 0.2),
+                             alpha = c(10, 20, 40), beta = c(6, 2, 1)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Exponential(.02)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+
+# X is Weib, weight = (1/3, 1/3, 1/3), alpha = (10, 20, 40), beta = (7, 2, 1)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pweibull, n = 100, args = list(shape = 0.5, scale = 25),
+                aes(col = "Weibull(0.5, 25)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(1/3, 1/3, 1/3),
+                             alpha = c(10, 20, 40), beta = c(7, 2, 1)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Weibull(0.5, 25)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+
+# X is Weib, weight = (0.5, 0.3, 0.2), alpha = (10, 20, 40), beta = (6, 2, 1)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pweibull, n = 100, args = list(shape = 0.5, scale = 25),
+                aes(col = "Weibull(0.5, 25)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(0.5, 0.3, 0.2),
+                             alpha = c(10, 20, 40), beta = c(6, 2, 1)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Weibull(0.5, 25)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+
+# X is Normal, weight = (0.1, 0.3, 0.6), alpha = (10, 20, 40), beta = (1.5, 1.5, 1.5)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pnorm, n = 100, args = list(mean = 50, sd = 50),
+                aes(col = "Normal(50, 50)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(0.1, 0.3, 0.6),
+                             alpha = c(10, 20, 40), beta = c(1.5, 1.5, 1.5)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Normal(50, 50)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+
+# X is Normal, weight = (1/3, 1/3, 1/3), alpha = (10, 20, 40), beta = (7, 2, 1)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pnorm, n = 100, args = list(mean = 50, sd = 50),
+                aes(col = "Normal(50, 50)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(1/3, 1/3, 1/3),
+                             alpha = c(10, 20, 40), beta = c(7, 2, 1)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Normal(50, 50)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+
+# X is Normal, weight = (0.5, 0.3, 0.2), alpha = (10, 20, 40), beta = (6, 2, 1)
+ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+  stat_function(fun = pnorm, n = 100, args = list(mean = 50, sd = 50),
+                aes(col = "Normal(50, 50)"),
+                linetype = 5,
+                size = 1) +
+  stat_function(fun = pmixgamma, n = 100, args = list(weight = c(0.5, 0.3, 0.2),
+                             alpha = c(10, 20, 40), beta = c(6, 2, 1)),
+                aes(col = "Mixed Gamma"),
+                size = 1) +
+  scale_color_manual("CDFs",
+                     values = c("Normal(50, 50)" = "blue",
+                                "Mixed Gamma" = "red")) +
+  labs(
+    y = "F(x)",
+    title = "CDF comparison between X and C"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(face = "italic"),
+    legend.position = "bottom",
+    legend.key.width = unit(1,"cm")
+  )
+```
+
+```{r}
+# # plot the mixture gamma distribution, weight = (0.1, 0.3, 0.6)
+# ggplot(data = data.frame(x = c(0, 100)), aes(x)) +
+#   stat_function(fun = dmixgamma, n = 100, args = list(weight = c(0.1, 0.3, 0.6),
+#                              alpha = c(1, 2, 5), beta = c(0.6, 0.2, 0.1)))
+# 
+# ggplot(data = data.frame(x = c(0, 100)), aes(x)) +
+#   stat_function(fun = dmixgamma, n = 100, args = list(weight = c(1/3, 1/3, 1/3),
+#                              alpha = c(2, 5, 10), beta = c(0.6, 0.2, 0.1)))
+# 
+# ggplot(data = data.frame(x = c(0, 100)), aes(x)) +
+#   stat_function(fun = dmixgamma, n = 100, args = list(weight = c(0.5, 0.3, 0.2),
+#                              alpha = c(2, 40, 10), beta = c(0.3, 0.6, 0.1)))
+# 
+# 
+# ggplot(data = data.frame(x = c(0, 100)), aes(x)) +
+#   stat_function(fun = dexp, n = 100, args = list(rate = 0.01))
+# 
+# ggplot(data = data.frame(x = c(0, 100)), aes(x)) +
+#   stat_function(fun = dweibull, n = 100, args = list(shape = 2, scale = 100))
+# 
+# pmixgamma <- function(x, weight, alpha, beta){
+#   len <-  length(weight)
+#   pmixg <- 0
+#   for (i in 1:len) {
+#     pmixg <- pmixg + weight[i] * pgamma(x, shape = alpha[i], scale = beta[i])
+#   }
+#   
+#   return(pmixg)
+# }
+# 
+# 
+# 
+# ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+#   stat_function(fun = pexp, n = 100, args = list(rate = 0.02), col = "blue") +
+#   stat_function(fun = pmixgamma, n = 100, args = list(weight = c(0.5, 0.3, 0.2),
+#                              alpha = c(10, 20, 40), beta = c(7, 2, 1)))
+# 
+# ggplot(data = data.frame(x = c(0, 200)), aes(x)) +
+#   stat_function(fun = pweibull, n = 100, args = list(shape = 0.5, scale = 25), col = "blue") +
+#   stat_function(fun = pmixgamma, n = 100, args = list(weight = c(0.5, 0.3, 0.2),
+#                              alpha = c(10, 20, 40), beta = c(7, 2, 1)))
+```
+
+```{r}
+## Quantiles
+p_seq <- seq(0.05,0.95,0.05)
+quant_exp <- qexp(p_seq, rate=0.02)
+quant_weib <- qweibull(p_seq, 0.5, 25)
+quant_norm <- qnorm(p_seq, 50, 50)
+
+## Color scale
+hues <- c("Gill" = hue_pal()(3)[1], "Efron" = hue_pal()(3)[2], "S*" = hue_pal()(3)[3])
+
+## X is Exp, weight = (0.1, 0.3, 0.6)
+# Gill's KM
+KM_G_EE <- matrix(nrow=length(quant_exp), ncol=nsamp)
+sum_G_EE <- rep(0, length(quant_exp))
+sum2_G_EE <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[1:100, i], del[1:100, i]) ~ 1, type = "kaplan-meier"), times = quant_exp)$surv
+    KM_G_EE[1:length(KM_init), i] <- KM_init
+    KM_G_EE[, i] <- replace_na(KM_G_EE[, i], KM_G_EE[length(KM_init), i])
+    
+    sum_G_EE <- sum_G_EE + KM_G_EE[,i]
+    sum2_G_EE <- sum2_G_EE + (KM_G_EE[,i])^2
+}    
+
+# Efron's KM
+KM_E_EE <- matrix(nrow=length(quant_exp), ncol=nsamp)
+sum_E_EE <- rep(0, length(quant_exp))
+sum2_E_EE <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[1:100, i], del[1:100, i]) ~ 1, type = "kaplan-meier"), times = quant_exp)$surv
+    KM_E_EE[1:length(KM_init), i] <- KM_init
+    KM_E_EE[, i] <- replace_na(KM_E_EE[, i], 0)
+    
+    sum_E_EE <- sum_E_EE + KM_E_EE[,i]
+    sum2_E_EE <- sum2_E_EE + (KM_E_EE[,i])^2
+}  
+
+# S*(t)
+
+# a <- rep(0, 3000)
+# b <- seq(0.01, 30, 0.01)
+# for (i in 1:3000) {
+#     a[i] <- 0.1 * pgamma(b[i], shape = 10, scale = 0.6) + 0.3 * pgamma(b[i], shape = 20, scale = 0.2) + 0.6 * pgamma(b[i], shape = 50, scale = 0.1)
+# }
+# 
+# ## Quantiles
+# p_seq <- seq(0.05,0.95,0.05)
+# q_idx <- rep(0, length(p_seq))
+# for (i in 1:length(p_seq)) {
+#   q_idx[i] <- max(which(a < p_seq[i]))
+# }
+# 
+# p_seq_upd <- a[q_idx]
+
+
+S_star_EE <- matrix(nrow=length(quant_exp), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_exp))
+sum_S_EE <- rep(0, length(quant_exp))
+sum2_S_EE <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_exp)){
+        I_t[, j] <- ifelse(Ti[1:100,i] > quant_exp[j], 1, 0)
+    }
+    S_star_EE[, i] <- colMeans(I_t)/(1 - 0.1 * pgamma(quant_exp, shape = 10, scale = 1.5) - 0.3 * pgamma(quant_exp, shape = 20, scale = 1.5) - 0.6 * pgamma(quant_exp, shape = 40, scale = 1.5))
+    
+    sum_S_EE <- sum_S_EE + S_star_EE[,i]
+    sum2_S_EE <- sum2_S_EE + (S_star_EE[,i])^2
+}
+
+# Bias
+S_EE <- pexp(quant_exp, rate = 0.02, lower.tail = FALSE)
+
+bias_G_EE <- (1/nsamp)*sum_G_EE - S_EE
+bias_E_EE <- (1/nsamp)*sum_E_EE - S_EE
+bias_S_EE <- (1/nsamp)*sum_S_EE - S_EE
+```
+
+## $X \sim Exp\left(\lambda = 0.02\right)$
+### Simulation setting 1 for C (the censoring distribution)
+
+* $p_1 = 0.1$, $p_2 = 0.3$, $p_3 = 0.6$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 1.5)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 1.5)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1.5)$
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(round(p_seq,2), bias_G_EE, color="Gill")) +
+    geom_line(aes(round(p_seq,2), bias_E_EE, color="Efron")) +
+    geom_line(aes(round(p_seq,2), bias_S_EE, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Exp(0.02), C ~ Mix Gamma (0.1, 0.3, 0.6)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(
+      axis.title.x = element_blank(),
+      axis.text.x = element_text(angle = 45,
+                                 size = 8)
+    ) 
+
+# MSE
+mse_G_EE <- (1/nsamp)*sum2_G_EE - ((1/nsamp)*sum_G_EE)^2 + bias_G_EE^2
+mse_E_EE <- (1/nsamp)*sum2_E_EE - ((1/nsamp)*sum_E_EE)^2 + bias_E_EE^2
+mse_S_EE <- (1/nsamp)*sum2_S_EE - ((1/nsamp)*sum_S_EE)^2 + bias_S_EE^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_EE, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_EE, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_EE, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Exp(0.02), C ~ Mix Gamma (0.1, 0.3, 0.6)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)
+          ) 
+```
+
+```{r}
+## X is Exp, weight = (1/3, 1/3, 1/3)
+# Gill's KM
+KM_G_EW <- matrix(nrow=length(quant_exp), ncol=nsamp)
+sum_G_EW <- rep(0, length(quant_exp))
+sum2_G_EW <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[101:200, i], del[101:200, i]) ~ 1, type = "kaplan-meier"), times = quant_exp)$surv
+    KM_G_EW[1:length(KM_init), i] <- KM_init
+    KM_G_EW[, i] <- replace_na(KM_G_EW[, i], KM_G_EW[length(KM_init), i])
+    
+    sum_G_EW <- sum_G_EW + KM_G_EW[,i]
+    sum2_G_EW <- sum2_G_EW + (KM_G_EW[,i])^2
+}    
+
+# Efron's KM
+KM_E_EW <- matrix(nrow=length(quant_exp), ncol=nsamp)
+sum_E_EW <- rep(0, length(quant_exp))
+sum2_E_EW <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[101:200, i], del[101:200, i]) ~ 1, type = "kaplan-meier"), times = quant_exp)$surv
+    KM_E_EW[1:length(KM_init), i] <- KM_init
+    KM_E_EW[, i] <- replace_na(KM_E_EW[, i], 0)
+    
+    sum_E_EW <- sum_E_EW + KM_E_EW[,i]
+    sum2_E_EW <- sum2_E_EW + (KM_E_EW[,i])^2
+}  
+
+# S*(t)
+S_star_EW <- matrix(nrow=length(quant_exp), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_exp))
+sum_S_EW <- rep(0, length(quant_exp))
+sum2_S_EW <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_exp)){
+        I_t[, j] <- ifelse(Ti[101:200,i] > quant_exp[j], 1, 0)
+    }
+    S_star_EW[, i] <- colMeans(I_t)/(1 - 1/3 * pgamma(quant_exp, shape = 10, scale = 7) - 1/3 * pgamma(quant_exp, shape = 20, scale = 2) - 1/3 * pgamma(quant_exp, shape = 40, scale = 1))
+
+    sum_S_EW <- sum_S_EW + S_star_EW[,i]
+    sum2_S_EW <- sum2_S_EW + (S_star_EW[,i])^2
+}
+
+# Bias
+S_EW <- pexp(quant_exp, rate = 0.02, lower.tail = FALSE)
+
+bias_G_EW <- (1/nsamp)*sum_G_EW - S_EW
+bias_E_EW <- (1/nsamp)*sum_E_EW - S_EW
+bias_S_EW <- (1/nsamp)*sum_S_EW - S_EW
+```
+
+### Simulation setting 2 for C (the censoring distribution)
+
+* $p_1 = p_2 = p_3 = \frac{1}{3}$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 7)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 2)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1)$
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_EW, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_EW, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_EW, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Exp(0.02), C ~ Mix Gamma (1/3, 1/3, 1/3)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)
+          ) 
+
+# MSE
+mse_G_EW <- (1/nsamp)*sum2_G_EW - ((1/nsamp)*sum_G_EW)^2 + bias_G_EW^2
+mse_E_EW <- (1/nsamp)*sum2_E_EW - ((1/nsamp)*sum_E_EW)^2 + bias_E_EW^2
+mse_S_EW <- (1/nsamp)*sum2_S_EW - ((1/nsamp)*sum_S_EW)^2 + bias_S_EW^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_EW, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_EW, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_EW, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Exp(0.02), C ~ Mix Gamma (1/3, 1/3, 1/3)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)
+          )
+```
+
+```{r}
+## X is Exp, weight = (0.5, 0.3, 0.2)
+# Gill's KM
+KM_G_EN <- matrix(nrow=length(quant_exp), ncol=nsamp)
+sum_G_EN <- rep(0, length(quant_exp))
+sum2_G_EN <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[201:300, i], del[201:300, i]) ~ 1, type = "kaplan-meier"), times = quant_exp)$surv
+    KM_G_EN[1:length(KM_init), i] <- KM_init
+    KM_G_EN[, i] <- replace_na(KM_G_EN[, i], KM_G_EN[length(KM_init), i])
+    
+    sum_G_EN <- sum_G_EN + KM_G_EN[,i]
+    sum2_G_EN <- sum2_G_EN + (KM_G_EN[,i])^2
+}    
+
+# Efron's KM
+KM_E_EN <- matrix(nrow=length(quant_exp), ncol=nsamp)
+sum_E_EN <- rep(0, length(quant_exp))
+sum2_E_EN <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[201:300, i], del[201:300, i]) ~ 1, type = "kaplan-meier"), times = quant_exp)$surv
+    KM_E_EN[1:length(KM_init), i] <- KM_init
+    KM_E_EN[, i] <- replace_na(KM_E_EN[, i], 0)
+    
+    sum_E_EN <- sum_E_EN + KM_E_EN[,i]
+    sum2_E_EN <- sum2_E_EN + (KM_E_EN[,i])^2
+}  
+
+# S*(t)
+S_star_EN <- matrix(nrow=length(quant_exp), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_exp))
+sum_S_EN <- rep(0, length(quant_exp))
+sum2_S_EN <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_exp)){
+        I_t[, j] <- ifelse(Ti[201:300,i] > quant_exp[j], 1, 0)
+    }
+    S_star_EN[, i] <- colMeans(I_t)/(1 - 0.5 * pgamma(quant_exp, shape = 10, scale = 6) - 0.3 * pgamma(quant_exp, shape = 20, scale = 2) - 0.2 * pgamma(quant_exp, shape = 40, scale = 1))
+    
+    sum_S_EN <- sum_S_EN + S_star_EN[,i]
+    sum2_S_EN <- sum2_S_EN + (S_star_EN[,i])^2
+}
+
+# Bias
+S_EN <- pexp(quant_exp, rate = 0.02, lower.tail = FALSE)
+
+bias_G_EN <- (1/nsamp)*sum_G_EN - S_EN
+bias_E_EN <- (1/nsamp)*sum_E_EN - S_EN
+bias_S_EN <- (1/nsamp)*sum_S_EN - S_EN
+```
+
+### Simulation setting 3 for C (the censoring distribution)
+
+* $p_1 = 0.5$, $p_2 = 0.3$, $p_3 = 0.2$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 6)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 2)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1)$
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_EN, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_EN, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_EN, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Exp(0.02), C ~ Mix Gamma (0.5, 0.3, 0.2)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                  size = 8)
+          ) 
+
+# MSE
+mse_G_EN <- (1/nsamp)*sum2_G_EN - ((1/nsamp)*sum_G_EN)^2 + bias_G_EN^2
+mse_E_EN <- (1/nsamp)*sum2_E_EN - ((1/nsamp)*sum_E_EN)^2 + bias_E_EN^2
+mse_S_EN <- (1/nsamp)*sum2_S_EN - ((1/nsamp)*sum_S_EN)^2 + bias_S_EN^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_EN, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_EN, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_EN, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Exp(0.02), C ~ Mix Gamma (0.5, 0.3, 0.2)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),          
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+```
+
+```{r}
+## X is Weibull, weight = (0.1, 0.3, 0.6)
+# Gill's KM
+KM_G_WE <- matrix(nrow=length(quant_weib), ncol=nsamp)
+sum_G_WE <- rep(0, length(quant_weib))
+sum2_G_WE <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[301:400, i], del[301:400, i]) ~ 1, type = "kaplan-meier"), times = quant_weib)$surv
+    KM_G_WE[1:length(KM_init), i] <- KM_init
+    KM_G_WE[, i] <- replace_na(KM_G_WE[, i], KM_G_WE[length(KM_init), i])
+    
+    sum_G_WE <- sum_G_WE + KM_G_WE[,i]
+    sum2_G_WE <- sum2_G_WE + (KM_G_WE[,i])^2
+}    
+
+# Efron's KM
+KM_E_WE <- matrix(nrow=length(quant_exp), ncol=nsamp)
+sum_E_WE <- rep(0, length(quant_exp))
+sum2_E_WE <- rep(0, length(quant_exp))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[301:400, i], del[301:400, i]) ~ 1, type = "kaplan-meier"), times = quant_weib)$surv
+    KM_E_WE[1:length(KM_init), i] <- KM_init
+    KM_E_WE[, i] <- replace_na(KM_E_WE[, i], 0)
+    
+    sum_E_WE <- sum_E_WE + KM_E_WE[,i]
+    sum2_E_WE <- sum2_E_WE + (KM_E_WE[,i])^2
+}  
+
+# S*(t)
+S_star_WE <- matrix(nrow=length(quant_weib), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_weib))
+sum_S_WE <- rep(0, length(quant_weib))
+sum2_S_WE <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_weib)){
+        I_t[, j] <- ifelse(Ti[301:400,i] > quant_weib[j], 1, 0)
+    }
+    S_star_WE[, i] <- colMeans(I_t)/(1 - 0.1 * pgamma(quant_weib, shape = 10, scale = 1.5) - 0.3 * pgamma(quant_weib, shape = 20, scale = 1.5) - 0.6 * pgamma(quant_weib, shape = 40, scale = 1.5))
+    
+    sum_S_WE <- sum_S_WE + S_star_WE[,i]
+    sum2_S_WE <- sum2_S_WE + (S_star_WE[,i])^2
+}
+
+# Bias
+S_WE <- pweibull(quant_weib, 0.5, 25, lower.tail = FALSE)
+
+bias_G_WE <- (1/nsamp)*sum_G_WE - S_WE
+bias_E_WE <- (1/nsamp)*sum_E_WE - S_WE
+bias_S_WE <- (1/nsamp)*sum_S_WE - S_WE
+```
+
+## $X \sim Weibull(0.5, 25)$
+### Simulation setting 1 for C (the censoring distribution)
+
+* $p_1 = 0.1$, $p_2 = 0.3$, $p_3 = 0.6$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 1.5)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 1.5)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1.5)$
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_WE, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_WE, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_WE, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Weibull(0.5, 25), C ~ Mix Gamma (0.1, 0.3, 0.6)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),          
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+
+# MSE
+mse_G_WE <- (1/nsamp)*sum2_G_WE - ((1/nsamp)*sum_G_WE)^2 + bias_G_WE^2
+mse_E_WE <- (1/nsamp)*sum2_E_WE - ((1/nsamp)*sum_E_WE)^2 + bias_E_WE^2
+mse_S_WE <- (1/nsamp)*sum2_S_WE - ((1/nsamp)*sum_S_WE)^2 + bias_S_WE^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_WE, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_WE, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_WE, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Weibull(0.5, 25), C ~ Mix Gamma (0.1, 0.3, 0.6)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+```
+
+```{r}
+## X is Weibull, C is Mix Gamma with weights (1/3, 1/3, 1/3)
+# Gill's KM
+KM_G_WW <- matrix(nrow=length(quant_weib), ncol=nsamp)
+sum_G_WW <- rep(0, length(quant_weib))
+sum2_G_WW <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[401:500, i], del[401:500, i]) ~ 1, type = "kaplan-meier"), times = quant_weib)$surv
+    KM_G_WW[1:length(KM_init), i] <- KM_init
+    KM_G_WW[, i] <- replace_na(KM_G_WW[, i], KM_G_WW[length(KM_init), i])
+    
+    sum_G_WW <- sum_G_WW + KM_G_WW[,i]
+    sum2_G_WW <- sum2_G_WW + (KM_G_WW[,i])^2
+}    
+
+# Efron's KM
+KM_E_WW <- matrix(nrow=length(quant_weib), ncol=nsamp)
+sum_E_WW <- rep(0, length(quant_weib))
+sum2_E_WW <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[401:500, i], del[401:500, i]) ~ 1, type = "kaplan-meier"), times = quant_weib)$surv
+    KM_E_WW[1:length(KM_init), i] <- KM_init
+    KM_E_WW[, i] <- replace_na(KM_E_WW[, i], 0)
+    
+    sum_E_WW <- sum_E_WW + KM_E_WW[,i]
+    sum2_E_WW <- sum2_E_WW + (KM_E_WW[,i])^2
+}  
+
+# S*(t)
+S_star_WW <- matrix(nrow=length(quant_weib), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_weib))
+sum_S_WW <- rep(0, length(quant_weib))
+sum2_S_WW <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_weib)){
+        I_t[, j] <- ifelse(Ti[401:500,i] > quant_weib[j], 1, 0)
+    }
+    S_star_WW[, i] <- colMeans(I_t)/(1 - 1/3 * pgamma(quant_weib, shape = 10, scale = 7) - 1/3 * pgamma(quant_weib, shape = 20, scale = 2) - 1/3 * pgamma(quant_weib, shape = 40, scale = 1))
+    
+    sum_S_WW <- sum_S_WW + S_star_WW[,i]
+    sum2_S_WW <- sum2_S_WW + (S_star_WW[,i])^2
+}
+
+# Bias
+S_WW <- pweibull(quant_weib, 0.5, 25, lower.tail = FALSE)
+
+bias_G_WW <- (1/nsamp)*sum_G_WW - S_WW
+bias_E_WW <- (1/nsamp)*sum_E_WW - S_WW
+bias_S_WW <- (1/nsamp)*sum_S_WW - S_WW
+```
+
+### Simulation setting 2 for C (the censoring distribution)
+
+* $p_1 = p_2 = p_3 = \frac{1}{3}$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 7)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 2)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1)$
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_WW, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_WW, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_WW, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Weibull(0.5, 25), C ~ Mix Gamma (1/3, 1/3, 1/3)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+
+# MSE
+mse_G_WW <- (1/nsamp)*sum2_G_WW - ((1/nsamp)*sum_G_WW)^2 + bias_G_WW^2
+mse_E_WW <- (1/nsamp)*sum2_E_WW - ((1/nsamp)*sum_E_WW)^2 + bias_E_WW^2
+mse_S_WW <- (1/nsamp)*sum2_S_WW - ((1/nsamp)*sum_S_WW)^2 + bias_S_WW^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_WW, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_WW, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_WW, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Weibull(0.5, 25), C ~ Mix Gamma (1/3, 1/3, 1/3)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+
+```
+
+```{r}
+## X is Weibull, C is the mix gamma with weight (0.5, 0.3, 0.2)
+# Gill's KM
+KM_G_WN <- matrix(nrow=length(quant_weib), ncol=nsamp)
+sum_G_WN <- rep(0, length(quant_weib))
+sum2_G_WN <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[501:600, i], del[501:600, i]) ~ 1, type = "kaplan-meier"), times = quant_weib)$surv
+    KM_G_WN[1:length(KM_init), i] <- KM_init
+    KM_G_WN[, i] <- replace_na(KM_G_WN[, i], KM_G_WN[length(KM_init), i])
+    
+    sum_G_WN <- sum_G_WN + KM_G_WN[,i]
+    sum2_G_WN <- sum2_G_WN + (KM_G_WN[,i])^2
+}    
+
+# Efron's KM
+KM_E_WN <- matrix(nrow=length(quant_weib), ncol=nsamp)
+sum_E_WN <- rep(0, length(quant_weib))
+sum2_E_WN <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[501:600, i], del[501:600, i]) ~ 1, type = "kaplan-meier"), times = quant_weib)$surv
+    KM_E_WN[1:length(KM_init), i] <- KM_init
+    KM_E_WN[, i] <- replace_na(KM_E_WN[, i], 0)
+    
+    sum_E_WN <- sum_E_WN + KM_E_WN[,i]
+    sum2_E_WN <- sum2_E_WN + (KM_E_WN[,i])^2
+}  
+
+# S*(t)
+S_star_WN <- matrix(nrow=length(quant_weib), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_weib))
+sum_S_WN <- rep(0, length(quant_weib))
+sum2_S_WN <- rep(0, length(quant_weib))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_weib)){
+        I_t[, j] <- ifelse(Ti[501:600,i] > quant_weib[j], 1, 0)
+    }
+    S_star_WN[, i] <- colMeans(I_t)/(1 - 0.5 * pgamma(quant_weib, shape = 10, scale = 6) - 0.3 * pgamma(quant_weib, shape = 20, scale = 2) - 0.2 * pgamma(quant_weib, shape = 40, scale = 1))
+    
+    sum_S_WN <- sum_S_WN + S_star_WN[,i]
+    sum2_S_WN <- sum2_S_WN + (S_star_WN[,i])^2
+}
+
+# Bias
+S_WN <- pweibull(quant_weib, 0.5, 25, lower.tail = FALSE)
+
+bias_G_WN <- (1/nsamp)*sum_G_WN - S_WN
+bias_E_WN <- (1/nsamp)*sum_E_WN - S_WN
+bias_S_WN <- (1/nsamp)*sum_S_WN - S_WN
+```
+
+### Simulation setting 3 for C (the censoring distribution)
+
+* $p_1 = 0.5$, $p_2 = 0.3$, $p_3 = 0.2$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 6)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 2)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1)$
+
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_WN, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_WN, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_WN, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Weibull(0.5, 25), C ~ Mix Gamma (0.5, 0.3, 0.2)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+
+# MSE
+mse_G_WN <- (1/nsamp)*sum2_G_WN - ((1/nsamp)*sum_G_WN)^2 + bias_G_WN^2
+mse_E_WN <- (1/nsamp)*sum2_E_WN - ((1/nsamp)*sum_E_WN)^2 + bias_E_WN^2
+mse_S_WN <- (1/nsamp)*sum2_S_WN - ((1/nsamp)*sum_S_WN)^2 + bias_S_WN^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_WN, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_WN, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_WN, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Weibull(0.5, 25), C ~ Mix Gamma (0.5, 0.3, 0.2)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8))
+```
+
+
+```{r}
+## X is Normal, C is Mix Gamma with weight (0.1, 0.3, 0.6)
+# Gill's KM
+KM_G_NE <- matrix(nrow=length(quant_norm), ncol=nsamp)
+sum_G_NE <- rep(0, length(quant_norm))
+sum2_G_NE <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[601:700, i], del[601:700, i]) ~ 1, type = "kaplan-meier"), times = quant_norm)$surv
+    KM_G_NE[1:length(KM_init), i] <- KM_init
+    KM_G_NE[, i] <- replace_na(KM_G_NE[, i], KM_G_NE[length(KM_init), i])
+    
+    sum_G_NE <- sum_G_NE + KM_G_NE[,i]
+    sum2_G_NE <- sum2_G_NE + (KM_G_NE[,i])^2
+}    
+
+# Efron's KM
+KM_E_NE <- matrix(nrow=length(quant_norm), ncol=nsamp)
+sum_E_NE <- rep(0, length(quant_norm))
+sum2_E_NE <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[601:700, i], del[601:700, i]) ~ 1, type = "kaplan-meier"), times = quant_norm)$surv
+    KM_E_NE[1:length(KM_init), i] <- KM_init
+    KM_E_NE[, i] <- replace_na(KM_E_NE[, i], 0)
+    
+    sum_E_NE <- sum_E_NE + KM_E_NE[,i]
+    sum2_E_NE <- sum2_E_NE + (KM_E_NE[,i])^2
+}  
+
+# S*(t)
+S_star_NE <- matrix(nrow=length(quant_norm), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_norm))
+sum_S_NE <- rep(0, length(quant_norm))
+sum2_S_NE <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_norm)){
+        I_t[, j] <- ifelse(Ti[601:700,i] > quant_norm[j], 1, 0)
+    }
+    S_star_NE[, i] <- colMeans(I_t)/(1 - 0.1 * pgamma(quant_norm, shape = 10, scale = 1.5) - 0.3 * pgamma(quant_norm, shape = 20, scale = 1.5) - 0.6 * pgamma(quant_norm, shape = 40, scale = 1.5))
+    
+    sum_S_NE <- sum_S_NE + S_star_NE[,i]
+    sum2_S_NE <- sum2_S_NE + (S_star_NE[,i])^2
+}
+
+# Bias
+S_NE <- pnorm(quant_norm, 50, 50, lower.tail = FALSE)
+
+bias_G_NE <- (1/nsamp)*sum_G_NE - S_NE
+bias_E_NE <- (1/nsamp)*sum_E_NE - S_NE
+bias_S_NE <- (1/nsamp)*sum_S_NE - S_NE
+```
+
+## $X \sim Normal(50, 50)$
+### Simulation setting 1 for C (the censoring distribution)
+
+* $p_1 = 0.1$, $p_2 = 0.3$, $p_3 = 0.6$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 1.5)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 1.5)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1.5)$
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_NE, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_NE, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_NE, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Normal(50, 50), C ~ Mix Gamma (0.1, 0.3, 0.6)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+
+# MSE
+mse_G_NE <- (1/nsamp)*sum2_G_NE - ((1/nsamp)*sum_G_NE)^2 + bias_G_NE^2
+mse_E_NE <- (1/nsamp)*sum2_E_NE - ((1/nsamp)*sum_E_NE)^2 + bias_E_NE^2
+mse_S_NE <- (1/nsamp)*sum2_S_NE - ((1/nsamp)*sum_S_NE)^2 + bias_S_NE^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_NE, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_NE, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_NE, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Normal(50, 50), C ~ Mix Gamma (0.1, 0.3, 0.6)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+```
+
+
+```{r}
+## X is Normal, C is Mix Gamma with weight (1/3, 1/3, 1/3)
+# Gill's KM
+KM_G_NW <- matrix(nrow=length(quant_norm), ncol=nsamp)
+sum_G_NW <- rep(0, length(quant_norm))
+sum2_G_NW <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[701:800, i], del[701:800, i]) ~ 1, type = "kaplan-meier"), times = quant_norm)$surv
+    KM_G_NW[1:length(KM_init), i] <- KM_init
+    KM_G_NW[, i] <- replace_na(KM_G_NW[, i], KM_G_NW[length(KM_init), i])
+    
+    sum_G_NW <- sum_G_NW + KM_G_NW[,i]
+    sum2_G_NW <- sum2_G_NW + (KM_G_NW[,i])^2
+}    
+
+# Efron's KM
+KM_E_NW <- matrix(nrow=length(quant_norm), ncol=nsamp)
+sum_E_NW <- rep(0, length(quant_norm))
+sum2_E_NW <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[701:800, i], del[701:800, i]) ~ 1, type = "kaplan-meier"), times = quant_norm)$surv
+    KM_E_NW[1:length(KM_init), i] <- KM_init
+    KM_E_NW[, i] <- replace_na(KM_E_NW[, i], 0)
+    
+    sum_E_NW <- sum_E_NW + KM_E_NW[,i]
+    sum2_E_NW <- sum2_E_NW + (KM_E_NW[,i])^2
+}  
+
+# S*(t)
+S_star_NW <- matrix(nrow=length(quant_norm), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_norm))
+sum_S_NW <- rep(0, length(quant_norm))
+sum2_S_NW <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_norm)){
+        I_t[, j] <- ifelse(Ti[701:800,i] > quant_norm[j], 1, 0)
+    }
+    S_star_NW[, i] <- colMeans(I_t)/(1 - 1/3 * pgamma(quant_norm, shape = 10, scale = 7) - 1/3 * pgamma(quant_norm, shape = 20, scale = 2) - 1/3 * pgamma(quant_norm, shape = 40, scale = 1))
+    
+    sum_S_NW <- sum_S_NW + S_star_NW[,i]
+    sum2_S_NW <- sum2_S_NW + (S_star_NW[,i])^2
+}
+
+# Bias
+S_NW <- pnorm(quant_norm, 50, 50, lower.tail = FALSE)
+
+bias_G_NW <- (1/nsamp)*sum_G_NW - S_NW
+bias_E_NW <- (1/nsamp)*sum_E_NW - S_NW
+bias_S_NW <- (1/nsamp)*sum_S_NW - S_NW
+```
+
+### Simulation setting 2 for C (the censoring distribution)
+
+* $p_1 = p_2 = p_3 = \frac{1}{3}$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 7)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 2)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1)$
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_NW, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_NW, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_NW, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Normal(50, 50), C ~ Mix Gamma (1/3, 1/3, 1/3)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+
+# MSE
+mse_G_NW <- (1/nsamp)*sum2_G_NW - ((1/nsamp)*sum_G_NW)^2 + bias_G_NW^2
+mse_E_NW <- (1/nsamp)*sum2_E_NW - ((1/nsamp)*sum_E_NW)^2 + bias_E_NW^2
+mse_S_NW <- (1/nsamp)*sum2_S_NW - ((1/nsamp)*sum_S_NW)^2 + bias_S_NW^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_NW, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_NW, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_NW, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Normal(50, 50), C ~ Mix Gamma (1/3, 1/3, 1/3)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+```
+
+```{r}
+## X is Normal, C is Mix Gamma (0.5, 0.3, 0.2)
+# Gill's KM
+KM_G_NN <- matrix(nrow=length(quant_norm), ncol=nsamp)
+sum_G_NN <- rep(0, length(quant_norm))
+sum2_G_NN <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[801:900, i], del[801:900, i]) ~ 1, type = "kaplan-meier"), times = quant_norm)$surv
+    KM_G_NN[1:length(KM_init), i] <- KM_init
+    KM_G_NN[, i] <- replace_na(KM_G_NN[, i], KM_G_NN[length(KM_init), i])
+    
+    sum_G_NN <- sum_G_NN + KM_G_NN[,i]
+    sum2_G_NN <- sum2_G_NN + (KM_G_NN[,i])^2
+}    
+
+# Efron's KM
+KM_E_NN <- matrix(nrow=length(quant_norm), ncol=nsamp)
+sum_E_NN <- rep(0, length(quant_norm))
+sum2_E_NN <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    KM_init <- summary(survfit(Surv(Ti[801:900, i], del[801:900, i]) ~ 1, type = "kaplan-meier"), times = quant_norm)$surv
+    KM_E_NN[1:length(KM_init), i] <- KM_init
+    KM_E_NN[, i] <- replace_na(KM_E_NN[, i], 0)
+    
+    sum_E_NN <- sum_E_NN + KM_E_NN[,i]
+    sum2_E_NN <- sum2_E_NN + (KM_E_NN[,i])^2
+}  
+
+# S*(t)
+S_star_NN <- matrix(nrow=length(quant_norm), ncol=nsamp)
+I_t <- matrix(nrow=100, ncol=length(quant_norm))
+sum_S_NN <- rep(0, length(quant_norm))
+sum2_S_NN <- rep(0, length(quant_norm))
+
+for (i in 1:nsamp){
+    for (j in 1:length(quant_norm)){
+        I_t[, j] <- ifelse(Ti[801:900,i] > quant_norm[j], 1, 0)
+    }
+    S_star_NN[, i] <- colMeans(I_t)/(1 - 0.5 * pgamma(quant_norm, shape = 10, scale = 6) - 0.3 * pgamma(quant_norm, shape = 20, scale = 2) - 0.2 * pgamma(quant_norm, shape = 40, scale = 1))
+    
+    sum_S_NN <- sum_S_NN + S_star_NN[,i]
+    sum2_S_NN <- sum2_S_NN + (S_star_NN[,i])^2
+}
+
+# Bias
+S_NN <- pnorm(quant_norm, 50, 50, lower.tail = FALSE)
+
+bias_G_NN <- (1/nsamp)*sum_G_NN - S_NN
+bias_E_NN <- (1/nsamp)*sum_E_NN - S_NN
+bias_S_NN <- (1/nsamp)*sum_S_NN - S_NN
+```
+
+### Simulation setting 3 for C (the censoring distribution)
+
+* $p_1 = 0.5$, $p_2 = 0.3$, $p_3 = 0.2$
+
+* $Y_1 \sim Gamma(\alpha_1 = 10, \beta_1 = 6)$
+
+* $Y_2 \sim Gamma(\alpha_2 = 20, \beta_2 = 2)$
+
+* $Y_3 \sim Gamma(\alpha_2 = 40, \beta_1 = 1)$
+
+
+```{r, fig.height=3.5, fig.width=5, fig.show='hold', out.width='3in', fig.align='left'}
+ggplot() +
+    geom_line(aes(p_seq, bias_G_NN, color="Gill")) +
+    geom_line(aes(p_seq, bias_E_NN, color="Efron")) +
+    geom_line(aes(p_seq, bias_S_NN, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="Bias", title="Bias for X ~ Normal(50, 50), C ~ Mix Gamma (0.5, 0.3, 0.2)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+
+# MSE
+mse_G_NN <- (1/nsamp)*sum2_G_NN - ((1/nsamp)*sum_G_NN)^2 + bias_G_NN^2
+mse_E_NN <- (1/nsamp)*sum2_E_NN - ((1/nsamp)*sum_E_NN)^2 + bias_E_NN^2
+mse_S_NN <- (1/nsamp)*sum2_S_NN - ((1/nsamp)*sum_S_NN)^2 + bias_S_NN^2
+
+ggplot() +
+    geom_line(aes(p_seq, mse_G_NN, color="Gill")) +
+    geom_line(aes(p_seq, mse_E_NN, color="Efron")) +
+    geom_line(aes(p_seq, mse_S_NN, color="S*")) +
+    geom_hline(yintercept=0, linetype="dotted") +
+    labs(y="MSE", title="MSE for X ~ Normal(50, 50), C ~ Mix Gamma (0.5, 0.3, 0.2)", color="Legend") +
+    scale_x_continuous(breaks = p_seq) +
+    scale_color_manual(values = hues) + 
+    theme_bw() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45,
+                                 size = 8)) 
+```
+
