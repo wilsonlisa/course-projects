@@ -1,0 +1,133 @@
+---
+title: "Parameter tuning"
+author: "Lisa Wilson"
+date: "5/5/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+source("data_cleaning.R")
+source("primary_results.R")
+
+library(sme) # from Wright paper
+library(strapgod)
+library(reshape2)
+library(ggformula)
+library(ggrepel)
+library(pander)
+library(xtable)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+q_id_ST <- polls_ST %>%
+    dplyr::select(question_id, start_date, end_date) %>%
+    distinct() %>%
+    pull(question_id)
+
+ratio_ST <- rep(NA, length(q_id_ST))
+for (i in 1:length(q_id_ST)){
+    temp <- as.data.frame(filter(polls_ST, question_id == q_id_ST[i]))
+    if (any(!c("Biden", "Sanders") %in% temp$ans_oth)){
+        next
+    } 
+    else{
+        ratio_ST[i] <- temp[temp$ans_oth == "Biden", "pct"]/temp[temp$ans_oth == "Sanders", "pct"]
+    }
+}
+
+ratio_ST <- as.data.frame(ratio_ST)
+colnames(ratio_ST) = "ratio"
+
+polls_ST_re <- polls_ST %>%
+    dplyr::select(question_id, poll_id, start_date, end_date, pollster_id, pollster, state) %>%
+    distinct() %>%
+    bind_cols(ratio_ST) %>%
+    drop_na()
+
+election_day <- as.Date("2020-03-03")
+polls_ST_re <- polls_ST_re %>%
+    mutate(days_til_elec = as.numeric(end_date - election_day),
+           logratio = log(ratio))
+
+polls_ST_re <- polls_ST_re %>%
+  mutate(mid_date = end_date - (1 + as.numeric(end_date - start_date)) %/% 2,
+         days_til_elec_mid = as.numeric(mid_date - election_day))
+```
+
+```{r}
+### Comparing to real results
+primary <- primary %>%
+    mutate(logratio_res = log(Biden/Sanders))
+
+theta_ST_0_res <- primary %>%
+  filter(State %in% ST) %>%
+  pull(logratio_res)
+
+primary <- primary %>%
+  filter(State %in% ST) %>%
+  mutate(spread = Biden - Sanders,
+         spread_tr = (exp(logratio_res) - 1)/(exp(logratio_res) + 1)*100)
+```
+
+
+```{r, cache=TRUE}
+mse_param <- read.csv("mse_param.csv")$x
+
+lam_mu <- c(0.5, 1, 5, 10, 50, 100, 500, 1000, 5000)
+lam_nu <- c(0.5, 1, 5, 10, 50, 100, 500, 1000, 5000)
+
+j_0.1 <- which(mse_param < 0.1) %% 9
+i_0.1 <- (which(mse_param < 0.1) - j_0.1)/9 + 1
+
+sme_ST_list <- list()
+theta_ST_0_tune <- matrix(nrow=length(i_0.1), ncol=length(ST))
+for (i in 1:length(i_0.1)){
+  sme_ST_list[[i]] <- sme(object = polls_ST_re$logratio, tme = polls_ST_re$days_til_elec_mid, ind = polls_ST_re$state, lambda.mu = lam_mu[i_0.1[i]], lambda.v = lam_nu[j_0.1[i]])
+  for (k in 1:length(ST)){
+    theta_ST_0_tune[i, k] <- spline(sort(unique(sme_ST_list[[i]]$data$tme)), sme_ST_list[[i]]$coefficients["mu",] + sme_ST_list[[i]]$coefficients[paste("v", ST[k], sep=""),], xout=0, method = "natural")$y
+  }
+}
+
+mse_tune <- rowMeans(sweep(theta_ST_0_tune, 2, theta_ST_0_res)^2)
+rmse_tune <- sqrt(rowMeans(sweep(theta_ST_0_tune, 2, theta_ST_0_res)^2))
+
+rmse_param <- sqrt(mse_param)
+
+param_tune <- data.frame(lam_mu = lam_mu[i_0.1], lam_nu = lam_nu[j_0.1], rmse_test = rmse_param[mse_param < 0.1], rmse_data = rmse_tune)
+colnames(param_tune) <- c("$\\lambda_{\\mu}$", "$\\lambda_{\\nu}$",
+                          "Test RMSE", "Data RMSE")
+
+pander(param_tune)
+
+# print(xtable(param_tune), file = "param_tune.tex")
+```
+
+```{r, eval = FALSE, echo = FALSE}
+\footnotesize
+\begin{table}[ht]
+\centering
+\caption{Comparison of RMSE values from different $\lambda$ combinations}
+\begin{tabular}{cccc}
+  \hline
+  \footnotesize
+ $\lambda_{\mu}$ & $\lambda_{v}$ & Test RMSE & Data RMSE \\ 
+  \hline
+  100 & 500 & 0.3130 & 0.3138 \\ 
+  500 & 50 & 0.3125 & 0.3726 \\ 
+  500 & 100 & 0.2981 & 0.3587 \\ 
+  500 & 500 & 0.3019 & 0.3138 \\ 
+  500 & 1000 & 0.3091 & 0.2958 \\ 
+  1000 & 50 & 0.3033 & 0.3948 \\ 
+  1000 & 1000 & 0.2910 & 0.3717 \\ 
+  1000 & 500 & 0.3012 & 0.3058 \\ 
+  1000 & 1000 & 0.3103 & 0.2889 \\ 
+  5000 & 50 & 0.2933 & 0.4569 \\ 
+  5000 & 100 & 0.2868 & 0.4210 \\ 
+   \hline
+\end{tabular}
+\end{table}
+\normalsize
+```
+
