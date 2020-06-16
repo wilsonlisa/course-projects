@@ -1,0 +1,649 @@
+---
+title: 'Primary 2020: SME Model'
+author: "Lisa Wilson"
+date: "5/8/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+setwd("~/Documents/Statistics MS Project/")
+
+source("data_cleaning.R")
+# source("primary_results.R")
+
+library(sme)
+library(strapgod)
+library(reshape2)
+library(ggformula)
+library(ggrepel)
+library(pander)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r data format}
+## try this out with Super Tuesday states
+# first create ratio variable
+q_id_ST <- polls_ST %>%
+    dplyr::select(question_id, start_date, end_date) %>%
+    distinct() %>%
+    pull(question_id)
+
+ratio_ST <- rep(NA, length(q_id_ST))
+for (i in 1:length(q_id_ST)){
+    temp <- as.data.frame(filter(polls_ST, question_id == q_id_ST[i]))
+    if (any(!c("Biden", "Sanders") %in% temp$ans_oth)){
+        next
+    } 
+    else{
+        ratio_ST[i] <- temp[temp$ans_oth == "Biden", "pct"]/temp[temp$ans_oth == "Sanders", "pct"]
+    }
+}
+
+ratio_ST <- as.data.frame(ratio_ST)
+colnames(ratio_ST) = "ratio"
+
+polls_ST_re <- polls_ST %>%
+    dplyr::select(question_id, poll_id, start_date, end_date, pollster_id, pollster, state) %>%
+    distinct() %>%
+    bind_cols(ratio_ST) %>%
+    drop_na()
+
+election_day <- as.Date("2020-03-03")
+polls_ST_re <- polls_ST_re %>%
+    mutate(days_til_elec = as.numeric(end_date - election_day),
+           logratio = log(ratio),
+           mid_date = end_date - (1 + as.numeric(end_date - start_date)) %/% 2,
+           days_til_elec_mid = as.numeric(mid_date - election_day))
+```
+
+
+```{r results}
+### Comparing to real results
+primary <- read.csv("primary_res.csv")
+
+primary <- primary %>%
+    mutate(ratio_res = Biden/Sanders,
+           logratio_res = log(Biden/Sanders))
+
+theta_ST_0_res <- primary %>%
+  filter(State %in% ST) %>%
+  pull(logratio_res)
+
+primary <- primary %>%
+  filter(State %in% ST) %>%
+  mutate(spread = Biden - Sanders,
+         spread_tr = (exp(logratio_res) - 1)/(exp(logratio_res) + 1)*100,
+         sum_BS = Biden + Sanders)
+```
+
+
+```{r param tune, eval = FALSE}
+## Train and test sets
+polls_ST_re_tr <- polls_ST_re %>%
+  filter(days_til_elec_mid < -2)
+
+polls_ST_re_ts <- polls_ST_re %>%
+  filter(days_til_elec_mid == -2)
+
+## Lambda choices
+lam_mu <- c(0.5, 1, 5, 10, 50, 100, 500, 1000, 5000)
+lam_nu <- c(0.5, 1, 5, 10, 50, 100, 500, 1000, 5000)
+
+## Should probably write a for loop to go through all 81 (!) combinations
+sme_ST_param <- matrix(list(), nrow = length(lam_mu), ncol = length(lam_nu))
+for (i in 1:length(lam_mu)){
+  for (j in 1:length(lam_nu)){
+    sme_ST_param[[i, j]] <- sme(object = polls_ST_re_tr$logratio, tme = polls_ST_re_tr$days_til_elec_mid, ind = polls_ST_re_tr$state, lambda.mu = lam_mu[i], lambda.v = lam_nu[j])
+  }
+}
+
+theta_ST_0_param <- matrix(nrow = length(lam_mu)^2, ncol = length(ST))
+for (i in 1:length(lam_mu)){
+  for (j in 1:length(lam_nu)){
+    for (k in 1:length(ST)){
+      theta_ST_0_param[9*(i-1)+j, k] <- spline(sort(unique(sme_ST_param[[i,j]]$data$tme)), sme_ST_param[[i,j]]$coefficients["mu",] + sme_ST_param[[i,j]]$coefficients[paste("v", ST[k], sep=""),], xout=-2, method = "natural")$y
+    }
+   
+  }
+}
+
+logratio_ST_ts <- polls_ST_re_ts %>%
+  group_by(state) %>%
+  summarize(logratio_avg = mean(logratio))
+
+theta_ST_0_param[1:3,]
+logratio_ST_ts$logratio_avg
+mse_param <- rowMeans(sweep(theta_ST_0_param, 2, logratio_ST_ts$logratio_avg)^2)
+
+mse_param <- read.csv("mse_param.csv")$x
+
+min(sqrt(mse_param)) # 0.08228216; rmse = 0.2868487
+which(mse_param == min(mse_param)) # 78
+which(sqrt(mse_param) == min(sqrt(mse_param)))
+## i=9, j=6
+lam_mu[9] # 5000
+lam_nu[6] # 100
+
+sort(mse_param)
+which(mse_param < 0.1)
+j_0.1 <- which(mse_param < 0.1) %% 9
+i_0.1 <- (which(mse_param < 0.1) - j_0.1)/9 + 1
+# 6,7; 7,5; 7,6; 7,7; 7,8; 8,5; 8,6; 8,7; 8,8; 9,5; 9,6
+mse_param[mse_param < 0.1]
+
+which(mse_param < 0.09)
+j_0.09 <- which(mse_param < 0.09) %% 9
+i_0.09 <- (which(mse_param < 0.09) - j_0.09)/9 + 1
+# 7,6; 8,6; 9,5; 9,6
+lam_mu[i_0.09]
+lam_nu[j_0.09]
+mse_param[mse_param < 0.09]
+```
+
+
+```{r model}
+lam_mu <- c(0.5, 1, 5, 10, 50, 100, 500, 1000, 5000)
+lam_nu <- c(0.5, 1, 5, 10, 50, 100, 500, 1000, 5000)
+
+### Refit model with mu=5000, lam_nu=100 (and using mid-date)
+sme_ST_mid <- sme(object = polls_ST_re$logratio, tme = polls_ST_re$days_til_elec_mid, ind = polls_ST_re$state, lambda.mu = lam_mu[9], lambda.v = lam_nu[6])
+plot(sme_ST_mid, showConfidenceBands = TRUE) # less parallel --> because mu=5000 instead of 5?
+theta_ST_0_mid <- rep(0, length(ST))
+for (k in 1:length(ST)){
+  theta_ST_0_mid[k] <- spline(sort(unique(sme_ST_mid$data$tme)), sme_ST_mid$coefficients["mu",] + sme_ST_mid$coefficients[paste("v", ST[k], sep=""),], xout=0, method = "natural")$y
+}
+
+## mean square error
+theta_ST_0_mid - theta_ST_0_res
+mean((theta_ST_0_mid - theta_ST_0_res)^2) # 0.1772458 -- higher than before!
+# but could be because using mid-date (which is probably better)
+
+## root mean square error
+sqrt(mean((theta_ST_0_mid - theta_ST_0_res)^2)) # 0.4210057
+```
+
+
+```{r ratio}
+# compare estimated ratio to true ratio
+mean((exp(theta_ST_0_mid) - primary$ratio_res)^2) # 0.2889333
+sqrt(mean((exp(theta_ST_0_mid) - primary$ratio_res)^2)) # 0.5375252
+```
+
+
+```{r bootstrap covar, eval = FALSE}
+### Get bootstrapped covariance matrix
+set.seed(42)
+
+boot_full <- tibble()
+g <- rep(0, length(ST))
+s_m <- rep(0, length(ST))
+
+for (i in 1:length(ST)){
+  boot <- polls_ST_re %>%
+    filter(state == ST[i]) %>%
+    group_by(pollster_id, state) %>%
+    summarize(m_k = mean(logratio))
+  
+  # boot_AL %>%
+  # print(n=Inf, width=Inf)
+  
+  g[i] <- mean(boot$m_k)
+  s_m[i] <- var(boot$m_k)
+  eta_k <- data.frame(pollster_id = unique(boot$pollster_id), eta_k = rnorm(length(unique(boot$pollster_id)), 0, sqrt(s_m[i])))
+  
+  boot <- inner_join(inner_join(polls_ST_re, boot), eta_k) %>%
+    mutate(y_prime = logratio - m_k - g[i] + eta_k) 
+  
+  boot_full <- rbind(boot_full, boot)
+}
+
+# print(boot_full, n=Inf, width=Inf)
+
+boot_full <- boot_full %>%
+  group_by(state)
+
+# get number of unique polls in each state
+state_n <- boot_full %>%
+  summarize(n = n()) %>%
+  pull(n)
+
+# what an absolute champ of a function
+boot_full_resamp <- samplify(boot_full, times=500, size=state_n, replace=TRUE, key=".samps") %>%
+  collect()
+
+# awkward but works
+sme_ST_boot_list <- list()
+theta_ST_0_boot <- matrix(nrow = 500, ncol = length(ST))
+for (i in 1:500){
+  boot_use <- filter(boot_full_resamp, .samps == i)
+  sme_ST_boot_list[[i]] <- sme(object = boot_use$logratio, tme = boot_use$days_til_elec_mid, ind = boot_use$state, lambda.mu = lam_mu[9], lambda.v = lam_nu[6])
+}
+# 12:44 - 12:58ish
+# 1:45 - 2:00ish
+
+for (i in 1:500){
+  for (j in 1:length(ST)){
+    theta_ST_0_boot[i,j] <- spline(sort(unique(sme_ST_boot_list[[i]]$data$tme)), sme_ST_boot_list[[i]]$coefficients["mu",] + sme_ST_boot_list[[i]]$coefficients[paste("v", ST[j], sep=""),], xout=0, method = "natural")$y
+  }
+}
+```
+
+
+```{r covar matrix}
+# write.csv(theta_ST_0_boot, "theta_ST_0_boot_mid.csv", row.names = FALSE)
+theta_ST_0_boot <- read.csv("theta_ST_0_boot_mid.csv")
+
+boot_ST_cov <- cov(theta_ST_0_boot)
+boot_ST_var <- diag(boot_ST_cov)
+```
+
+
+```{r CIs}
+## CIs
+theta_ST_0_mid_lb <- rep(0, length(ST))
+theta_ST_0_mid_ub <- rep(0, length(ST))
+for (i in 1:length(ST)){
+  theta_ST_0_mid_lb[i] <- theta_ST_0_mid[i] - 1.96*sqrt(boot_ST_var[i])
+  theta_ST_0_mid_ub[i] <- theta_ST_0_mid[i] + 1.96*sqrt(boot_ST_var[i])
+}
+
+theta_ST_0_mid_lb
+theta_ST_0_mid_ub
+
+## Lil plot
+theta_ST_mid_df <- data.frame(est = theta_ST_0_mid, res = theta_ST_0_res, 
+                              lb = theta_ST_0_mid_lb, ub = theta_ST_0_mid_ub,
+                              state = ST)
+
+write.csv(theta_ST_mid_df, file = "theta_ST_mid.csv", row.names = FALSE)
+
+theta_coverage <- mean(theta_ST_mid_df$res < theta_ST_mid_df$ub & theta_ST_mid_df$res > theta_ST_mid_df$lb)
+
+ggplot(theta_ST_mid_df, aes(x=ST)) +
+  geom_hline(yintercept = 0, color = "grey75") +
+  geom_point(aes(y = est)) +
+  geom_errorbar(aes(ymin = lb, ymax = ub), width = 0.2) +
+  geom_point(aes(y = res), color = "blue", shape = 17, size = 2) +
+  labs(x = "State", y = expression(hat(theta)), 
+       title = "Log-ratio estimates for Super Tuesday states") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 13/14, which is close enough to 0.95*14 = 13.3
+# Maine, Minnesota, Texas, Utah get sign wrong
+# Maine, Minnesota, Texas: predict Bernie, actually Biden
+# Utah: predict Biden, actually pretty Bernie
+# interesting that 9/14 (0.643) intervals cross 0
+```
+
+
+```{r ratio bootstrap}
+ratio_ST_0_boot <- exp(theta_ST_0_boot)
+head(ratio_ST_0_boot)
+
+boot_r_ST_cov <- cov(ratio_ST_0_boot)
+boot_r_ST_var <- diag(boot_r_ST_cov)
+```
+
+
+```{r ratio CI}
+## is this right? just exponentiating bounds?
+## maybe try doing bootstrap on ratio itself
+ggplot(theta_ST_mid_df, aes(x=ST)) +
+  geom_hline(yintercept = 1, color = "grey75") +
+  geom_point(aes(y = exp(est))) +
+  geom_errorbar(aes(ymin = exp(lb), ymax = exp(ub)), width = 0.2) +
+  geom_point(aes(y = primary$ratio_res), color = "blue", shape = 17, size = 2) +
+  labs(x = "State", y = "Biden/Sanders", 
+       title = "Ratio estimates for Super Tuesday states") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+mean(primary$ratio_res < exp(theta_ST_mid_df$ub) & primary$ratio_res > exp(theta_ST_mid_df$lb)) # same as theta coverage
+
+## ratio CIs
+ratio_ST_0_mid <- exp(theta_ST_0_mid)
+ratio_ST_0_mid_lb <- rep(0, length(ST))
+ratio_ST_0_mid_ub <- rep(0, length(ST))
+for (i in 1:length(ST)){
+  ratio_ST_0_mid_lb[i] <- ratio_ST_0_mid[i] - 1.96*sqrt(boot_r_ST_var[i])
+  ratio_ST_0_mid_ub[i] <- ratio_ST_0_mid[i] + 1.96*sqrt(boot_r_ST_var[i])
+}
+
+ratio_ST_0_mid_lb
+ratio_ST_0_mid_ub
+
+## Lil plot
+ratio_ST_mid_df <- data.frame(est = ratio_ST_0_mid, res = primary$ratio_res, 
+                              lb = ratio_ST_0_mid_lb, ub = ratio_ST_0_mid_ub,
+                              state = ST)
+
+ratio_coverage <- mean(ratio_ST_mid_df$res < ratio_ST_mid_df$ub & ratio_ST_mid_df$res > ratio_ST_mid_df$lb)
+
+ggplot(ratio_ST_mid_df, aes(x=ST)) +
+  geom_hline(yintercept = 1, color = "grey75") +
+  geom_point(aes(y = est)) +
+  geom_errorbar(aes(ymin = lb, ymax = ub), width = 0.2) +
+  geom_point(aes(y = res), color = "blue", shape = 17, size = 2) +
+  labs(x = "State", y = "Biden/Sanders", 
+       title = "Ratio estimates for Super Tuesday states") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# plot is different from lazy back-transformation
+# is this right?
+```
+
+
+```{r diagnostics, fig.asp = 1}
+### Some diagnostics (Supplement section 1.2)
+
+theta_reg <- lm(est ~ res, data = theta_ST_mid_df)
+summary(theta_reg) # adj R-squared = 0.5164; regression s = 0.4304
+## figure out how to interpret beta hats
+
+# Fix this one
+# Add legends
+# df_0_mid <- data.frame(est = theta)
+ggplot(theta_ST_mid_df, aes(x=res, y=est)) +
+  annotate("rect", xmin = 0, xmax = Inf, ymin = 0, ymax = Inf, fill = "dodgerblue", alpha = 0.6) +
+  annotate("rect", xmin = -Inf, xmax = 0, ymin = -Inf, ymax = 0, fill = "dodgerblue", alpha = 0.6) +
+  annotate("rect", xmin = -Inf, xmax = 0, ymin = 0, ymax = Inf, fill = "steelblue3", alpha = 0.6) +
+  annotate("rect", xmin = 0, xmax = Inf, ymin = -Inf, ymax = 0, fill = "steelblue3", alpha = 0.6) +
+  geom_hline(yintercept = 0, color = "grey50") +
+  geom_vline(xintercept = 0, color = "grey50") + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_abline(intercept = theta_reg$coefficients[1], slope = theta_reg$coefficients[2]) +
+  # geom_smooth(aes(x=res, y=est), method = lm, se = FALSE) +
+  geom_point(shape = ifelse(theta_ST_mid_df$est > 0, 15, 17)) +
+  geom_text_repel(aes(label = state), size = 3) +
+  labs(x = "Results", y = "Estimates") +
+  scale_x_continuous(breaks = seq(-1.5, 1.5, 0.5), limits = c(-1.5, 1.5)) +
+  scale_y_continuous(breaks = seq(-1.5, 1.5, 0.5), limits = c(-1.5, 1.5)) +
+  theme_bw()
+# kind of linear? Utah and Alabama throwing things off
+
+theta_reg_noUT <- lm(est ~ res, data = filter(theta_ST_mid_df, state != "Utah"))
+summary(theta_reg_noUT) # B0 = -0.16593, B1 = 1.04669
+# really interesting, excluding Utah does change beta values
+# still not too much bias toward Bernie, but more than before
+# interesting that without Utah, model tends to predict slightly more extreme spreads than actual results --> before model predicting less extreme spreads than results
+
+ggplot(filter(theta_ST_mid_df, state != "Utah"), aes(x=res, y=est)) +
+  annotate("rect", xmin = 0, xmax = Inf, ymin = 0, ymax = Inf, fill = "dodgerblue", alpha = 0.6) +
+  annotate("rect", xmin = -Inf, xmax = 0, ymin = -Inf, ymax = 0, fill = "dodgerblue", alpha = 0.6) +
+  annotate("rect", xmin = -Inf, xmax = 0, ymin = 0, ymax = Inf, fill = "steelblue3", alpha = 0.6) +
+  annotate("rect", xmin = 0, xmax = Inf, ymin = -Inf, ymax = 0, fill = "steelblue3", alpha = 0.6) +
+  geom_hline(yintercept = 0, color = "grey50") +
+  geom_vline(xintercept = 0, color = "grey50") + 
+  geom_abline(intercept = 0, slope = 1) +
+  geom_abline(intercept = theta_reg_noUT$coefficients[1], slope = theta_reg_noUT$coefficients[2], linetype = "dashed") +
+  # geom_smooth(aes(x=res, y=est), method = lm, se = FALSE) +
+  geom_point(shape = ifelse(filter(theta_ST_mid_df, state != "Utah")$est > 0, 15, 17)) +
+  geom_text_repel(aes(label = state), size = 3) +
+  labs(x = "Results", y = "Estimates") +
+  scale_x_continuous(breaks = seq(-1.5, 1.5, 0.5), limits = c(-1.5, 1.5)) +
+  scale_y_continuous(breaks = seq(-1.5, 1.5, 0.5), limits = c(-1.5, 1.5)) +
+  theme_bw()
+
+cor(theta_ST_0_mid, theta_ST_0_res) # 0.744068
+cor(theta_ST_0_mid[-12], theta_ST_0_res[-12]) # 0.9249992
+# not as good as paper!
+
+boot_ST_SE <- sqrt(boot_ST_var)
+boot_ST_SE_med <- median(boot_ST_SE) # 0.2533542
+which(boot_ST_SE == min(boot_ST_SE)) # Arkansas, 0.1233541
+which(boot_ST_SE == max(boot_ST_SE)) # Massachusetts, 0.5321613
+
+### Supplementary Figure 4 diagnostics
+## correlation matrix
+boot_ST_cor <- cor(theta_ST_0_boot)
+colnames(boot_ST_cor) <- ST
+rownames(boot_ST_cor) <- ST
+boot_ST_cor2 <- setNames(melt(boot_ST_cor), c("State1", "State2", "Correlation"))
+
+# heatmap
+ggplot(boot_ST_cor2, aes(State1, State2, fill = Correlation)) +
+  geom_tile() +
+  scale_fill_viridis_c()
+
+# histogram --> make prettier
+boot_ST_cor2 %>%
+  filter(Correlation != 1) %>%
+  ggplot(aes(Correlation)) +
+    geom_histogram()
+
+# least correlated states
+boot_ST_cor2 %>%
+  filter(Correlation != 1) %>%
+  arrange(abs(Correlation)) %>%
+  head(n=10)
+
+# most correlated states (by magnitude)
+# highest correlation ~0.36 --> states pretty uncorrelated overall
+boot_ST_cor2 %>%
+  filter(Correlation != 1) %>%
+  arrange(desc(abs(Correlation))) %>%
+  head(n=10)
+
+## Q-Q plot
+theta_zstat <- (theta_ST_0_mid - theta_ST_0_res)/boot_ST_SE
+ggplot() +
+  stat_qq(aes(sample = theta_zstat)) +
+  stat_qq_line(aes(sample = theta_zstat)) +
+  theme_bw()
+# not terrible!
+```
+
+
+```{r figure 3 plots}
+### Figure 3 plots
+sme_ST_mid_coef <- data.frame(t(sme_ST_mid$coefficients["mu",] + sme_ST_mid$coefficients[paste("v", ST, sep=""),]))
+colnames(sme_ST_mid_coef) <- ST
+sme_ST_mid_coef$days_til_elec_mid <- rownames(sme_ST_mid_coef)
+sme_ST_mid_coef <- rbind(sme_ST_mid_coef, c(theta_ST_0_mid, 0))
+rownames(sme_ST_mid_coef) <- NULL
+
+# based on sme plot code
+# https://github.com/cran/sme/blob/master/R/sme.R
+mu <- spline(x = as.numeric(colnames(sme_ST_mid$coefficients)), y = sme_ST_mid$coefficients["mu",], n = 500, method = "natural")
+fs <- lapply(2:nrow(sme_ST_mid$coefficients), function(i){ spline(as.numeric(colnames(sme_ST_mid$coefficients)), y = sme_ST_mid$coefficients["mu",] + sme_ST_mid$coefficients[i,], method = "natural", n = 500) })
+
+CI_col <- c("Polls" = "black", "Estimate" = "black", "Result" = "blue")
+CI_shape <- c("Polls" = 1, "Estimate" = 16, "Result" = 17)
+st_nat_col <- c("State trend" = "black", "National trend" = "dodgerblue4")
+st_nat_line <- c("State trend" = "solid", "National trend" = "dashed")
+p <- list()
+for (i in 1:length(ST)){
+  p[[i]] <- ggplot() +
+    geom_line(data = data.frame(fs[[i]]), aes(x, y, color = "State trend", linetype = "State trend")) +
+    geom_line(aes(mu$x, mu$y, color = "National trend", linetype = "National trend"), size = 0.75) +
+    geom_point(data = filter(polls_ST_re, state == ST[i]), aes(days_til_elec_mid, logratio), shape = 1, size = 2) +
+    geom_point(data = theta_ST_mid_df[i,], aes(x = 0, y = est), size = 2) +
+    # geom_errorbar(data = theta_ST_mid_df[i,], aes(x = 0, ymin = lb, ymax = ub), width = 6) +
+    geom_point(data = theta_ST_mid_df[i,], aes(x = 0, y = res), color = "blue", shape = 17, size = 2) +
+    geom_hline(yintercept = 0, color = "grey75") +
+    labs(x = "Date", y = expression(hat(theta)), title = ST[i]) +
+    scale_colour_manual(name = "", values = st_nat_col) + 
+    scale_linetype_manual(name = "", values = st_nat_line) +
+    theme_bw() +
+    scale_x_continuous(breaks = seq(-400, 0, by=40), labels = format(seq(election_day - 400, election_day, by=40), "%m/%d \n%Y")) + 
+    theme(legend.position = "bottom")
+}
+
+p[[7]]
+
+p2 <- list()
+for (i in 1:length(ST)){
+  p2[[i]] <- ggplot() +
+    geom_line(data = data.frame(fs[[i]]), aes(x, y)) +
+    # geom_line(aes(mu$x, mu$y, color = "National trend", linetype = "National trend"), size = 0.75) +
+    geom_point(data = filter(polls_ST_re, state == ST[i]), aes(days_til_elec_mid, logratio, color = "Polls", shape = "Polls"), size = 2) +
+    geom_point(data = theta_ST_mid_df[i,], aes(x = 0, y = est, color = "Estimate", shape = "Estimate"), size = 2.5) +
+    # geom_errorbar(data = theta_ST_mid_df[i,], aes(x = 0, ymin = lb, ymax = ub), width = 6) +
+    geom_point(data = theta_ST_mid_df[i,], aes(x = 0, y = res, color = "Result", shape = "Result"), size = 2.5) +
+    geom_hline(yintercept = 0, color = "grey75") +
+    labs(x = "Date", y = expression(hat(theta)), title = ST[i]) +
+    scale_colour_manual(name = "", values = CI_col) + 
+    scale_shape_manual(name = "", values = CI_shape) +
+    theme_bw() +
+    scale_x_continuous(breaks = seq(-400, 0, by=40), labels = format(seq(election_day - 400, election_day, by=40), "%m/%d \n%Y")) + 
+    theme(legend.position = "bottom")
+}
+
+p2[[1]]
+
+plot(sme_ST_mid)
+
+# State trends all on one plot
+fs_df_ST <- list()
+fs_df <- data.frame(days_til_elec_mid = fs[[1]]$x, logratio = fs[[1]]$y, state = ST[1])
+for (i in 2:length(ST)){
+  fs_df_ST[[i]] <- data.frame(days_til_elec_mid = fs[[i]]$x, logratio = fs[[i]]$y, state = ST[i])
+  fs_df <- rbind(fs_df, fs_df_ST[[i]])
+}
+
+ggplot() +
+  geom_line(data = fs_df, aes(days_til_elec_mid, logratio, color = state)) +
+  geom_line(aes(mu$x, mu$y), size = 1) +
+  # geom_point(data = polls_ST_re, aes(days_til_elec_mid, logratio, color = state), shape = 1, size = 2) +
+  geom_hline(yintercept = 0, color = "grey75") +
+  labs(x = "Days until election", y = expression(hat(theta)), title = "State trends", color = "State") +
+  theme_bw() 
+```
+
+
+```{r national trend}
+### comparing to national
+polls_natl <- polls %>%
+  filter(is.na(state)) %>%
+  mutate(mid_date = end_date - (1 + as.numeric(end_date - start_date)) %/% 2,
+         days_til_elec_mid = as.numeric(mid_date - election_day)) %>%
+  filter(days_til_elec_mid <= 0) %>%
+  select(question_id, poll_id, pollster_id, pollster, sample_size, fte_grade,
+         population, population_full, methodology, start_date, end_date,
+         pct, ans_oth, mid_date, days_til_elec_mid)
+  # filter(fte_grade %in% c("A+", "A", "A-", "A/B"),
+         # mid_date == "2020-02-25" | mid_date == "2020-02-14" | mid_date == "2020-02-07") %>%
+  # pivot_wider(names_from = ans_oth, values_from = pct, values_fill = list(pct = 0), values_fn = list(pct = sum)) %>%
+  # mutate(ratio = Biden/Sanders,
+         # logratio = log(ratio))
+
+q_id_natl <- polls_natl %>%
+  dplyr::select(question_id, start_date, end_date) %>%
+  distinct() %>%
+  pull(question_id)
+
+ratio_natl <- rep(NA, length(q_id_natl))
+for (i in 1:length(q_id_natl)){
+  temp <- as.data.frame(filter(polls_natl, question_id == q_id_natl[i]))
+  if (any(!c("Biden", "Sanders") %in% temp$ans_oth)){
+    next
+  } 
+  else{
+    ratio_natl[i] <- temp[temp$ans_oth == "Biden", "pct"]/temp[temp$ans_oth == "Sanders", "pct"]
+  }
+}
+
+ratio_natl <- as.data.frame(ratio_natl)
+colnames(ratio_natl) = "ratio"
+
+polls_natl_re <- polls_natl %>%
+  dplyr::select(question_id, poll_id, start_date, end_date, 
+                mid_date, days_til_elec_mid, pollster_id, pollster, fte_grade) %>%
+  distinct() %>%
+  bind_cols(ratio_natl) %>%
+  drop_na(ratio) %>%
+  mutate(logratio = log(ratio))
+
+polls_natl_re %>%
+  filter(is.na(fte_grade)) %>%
+  print(n=Inf, width=Inf)
+
+ggplot(polls_natl_re, aes(ratio)) +
+  geom_boxplot()
+
+polls_natl_re %>% print(n=Inf, width=Inf)
+
+theta_natl <- spline(x = as.numeric(colnames(sme_ST_mid$coefficients)), y = sme_ST_mid$coefficients["mu",], xout = polls_natl_re$days_til_elec_mid, method = "natural")
+sqrt(mean((polls_natl_re$logratio - theta_natl$y)^2)) # RMSE = 0.2921537
+
+natl_SE <- sqrt(diag(vcov(sme_ST_mid)))
+
+# based on sme source code for plot.sme
+mu_CI_L <- spline(x = as.numeric(colnames(sme_ST_mid$coefficients)), y = sme_ST_mid$coefficients["mu",] - 1.96*natl_SE, n = 500,  method = "natural")
+mu_CI_U <- spline(x = as.numeric(colnames(sme_ST_mid$coefficients)), y = sme_ST_mid$coefficients["mu",] + 1.96*natl_SE, n = 500,  method = "natural")
+
+# relevel fte_grade to consolidate grades
+polls_natl_re$fte_grade2 <- fct_collapse(polls_natl_re$fte_grade,
+             A = c("A", "A-", "A+"),
+             B = c("A/B", "B", "B-", "B+"),
+             C = c("B/C", "C", "C-", "C+"),
+             D = c("C/D", "D-"))
+
+ggplot() +
+  geom_hline(yintercept = 0, color = "grey75") +
+  geom_point(data = polls_natl_re, aes(days_til_elec_mid, logratio, color = fte_grade2), alpha = 0.7) +
+  # scale_color_viridis_d() +
+  geom_ribbon(aes(x = mu_CI_L$x, ymin = mu_CI_L$y, ymax = mu_CI_U$y), alpha = 0.3, fill = "steelblue1", color = "black") +
+  geom_line(aes(mu$x, mu$y), size = 1) +
+  labs(title = "Estimated national trend overlaid on national polls", x = "Date", y = expression(hat(theta)), color = "538 Pollster Grade") +
+  theme_bw() +
+  scale_x_continuous(breaks = seq(-500, 0, by=50), labels = format(seq(election_day - 500, election_day, by=50), "%m/%d \n%Y")) + 
+  theme(legend.position = "bottom")
+
+# try color-coding with other variables: method?
+```
+
+```{r 538 comparison}
+# https://projects.fivethirtyeight.com/2020-primary-forecast/california/
+# pred538 <- data.frame("state" = ST, "Biden" = rep(0, length(ST)), "Sanders" = rep(0, length(ST)))
+# CA = 26, 32; TX = 30, 29; NC = 41, 24; VA = 43, 23; 
+# MA = 24, 29; MN = 23, 28; CO = 23, 29; TN = 34, 27;
+# AL = 44, 21; OK = 34, 25; AR = 35, 23; UT = 25, 29;
+# ME = 26, 33; VT = 14, 56
+pred538 <- data.frame(matrix(c("Alabama", 44, 21,
+             "Arkansas", 35, 23,
+             "California", 26, 32,
+             "Colorado", 23, 29,
+             "Maine", 26, 33,
+             "Massachusetts", 24, 29,
+             "Minnesota", 23, 28,
+             "North Carolina", 41, 24,
+             "Oklahoma", 34, 25,
+             "Tennessee", 34, 27,
+             "Texas", 30, 29,
+             "Utah", 25, 29,
+             "Vermont", 14, 56,
+             "Virginia", 43, 23), nrow = length(ST), ncol = 3, byrow = TRUE))
+colnames(pred538) <- c("state", "Biden", "Sanders")
+
+pred538 <- pred538 %>%
+  mutate(Biden = as.numeric(Biden),
+         Sanders = as.numeric(Sanders),
+         spread = Biden - Sanders,
+         ratio = Biden/Sanders,
+         theta = log(ratio))
+
+pred538_reg <- lm(pred538$theta ~ theta_ST_0_res)
+summary(pred538_reg) # more bias toward Sanders: intercept = -0.13798
+summary(theta_reg)
+
+# Maine, Massachusetts, Minnesota miscalled
+pred538_miss <- data.frame(state = ST, theta = pred538$theta, res = theta_ST_0_res)
+
+# summary(lm(pred538$spread ~ primary$spread))
+
+cor(pred538$theta, theta_ST_0_res) # higher correlation = 0.8688282
+
+sqrt(mean((pred538$theta-theta_ST_0_res)^2)) # lower RMSE = 0.3348598
+
+# SEs for spread --> not sure how to do for theta
+pred538 %>%
+  mutate(SE = spread/qnorm(Biden/100))
+```
+
+
+
