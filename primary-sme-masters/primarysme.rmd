@@ -213,15 +213,13 @@ state_n <- boot_full %>%
 boot_full_resamp <- samplify(boot_full, times=500, size=state_n, replace=TRUE, key=".samps") %>%
   collect()
 
-# awkward but works
+# bit slow but works
 sme_ST_boot_list <- list()
 theta_ST_0_boot <- matrix(nrow = 500, ncol = length(ST))
 for (i in 1:500){
   boot_use <- filter(boot_full_resamp, .samps == i)
   sme_ST_boot_list[[i]] <- sme(object = boot_use$logratio, tme = boot_use$days_til_elec_mid, ind = boot_use$state, lambda.mu = lam_mu[9], lambda.v = lam_nu[6])
 }
-# 12:44 - 12:58ish
-# 1:45 - 2:00ish
 
 for (i in 1:500){
   for (j in 1:length(ST)){
@@ -252,7 +250,7 @@ for (i in 1:length(ST)){
 theta_ST_0_mid_lb
 theta_ST_0_mid_ub
 
-## Lil plot
+## plot of log-ratio estimates w/ confidence intervals
 theta_ST_mid_df <- data.frame(est = theta_ST_0_mid, res = theta_ST_0_res, 
                               lb = theta_ST_0_mid_lb, ub = theta_ST_0_mid_ub,
                               state = ST)
@@ -289,8 +287,7 @@ boot_r_ST_var <- diag(boot_r_ST_cov)
 
 
 ```{r ratio CI}
-## is this right? just exponentiating bounds?
-## maybe try doing bootstrap on ratio itself
+## plot of ratio estimates w/ confidence intervals
 ggplot(theta_ST_mid_df, aes(x=ST)) +
   geom_hline(yintercept = 1, color = "grey75") +
   geom_point(aes(y = exp(est))) +
@@ -302,38 +299,6 @@ ggplot(theta_ST_mid_df, aes(x=ST)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 mean(primary$ratio_res < exp(theta_ST_mid_df$ub) & primary$ratio_res > exp(theta_ST_mid_df$lb)) # same as theta coverage
-
-## ratio CIs
-ratio_ST_0_mid <- exp(theta_ST_0_mid)
-ratio_ST_0_mid_lb <- rep(0, length(ST))
-ratio_ST_0_mid_ub <- rep(0, length(ST))
-for (i in 1:length(ST)){
-  ratio_ST_0_mid_lb[i] <- ratio_ST_0_mid[i] - 1.96*sqrt(boot_r_ST_var[i])
-  ratio_ST_0_mid_ub[i] <- ratio_ST_0_mid[i] + 1.96*sqrt(boot_r_ST_var[i])
-}
-
-ratio_ST_0_mid_lb
-ratio_ST_0_mid_ub
-
-## Lil plot
-ratio_ST_mid_df <- data.frame(est = ratio_ST_0_mid, res = primary$ratio_res, 
-                              lb = ratio_ST_0_mid_lb, ub = ratio_ST_0_mid_ub,
-                              state = ST)
-
-ratio_coverage <- mean(ratio_ST_mid_df$res < ratio_ST_mid_df$ub & ratio_ST_mid_df$res > ratio_ST_mid_df$lb)
-
-ggplot(ratio_ST_mid_df, aes(x=ST)) +
-  geom_hline(yintercept = 1, color = "grey75") +
-  geom_point(aes(y = est)) +
-  geom_errorbar(aes(ymin = lb, ymax = ub), width = 0.2) +
-  geom_point(aes(y = res), color = "blue", shape = 17, size = 2) +
-  labs(x = "State", y = "Biden/Sanders", 
-       title = "Ratio estimates for Super Tuesday states") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# plot is different from lazy back-transformation
-# is this right?
 ```
 
 
@@ -342,10 +307,7 @@ ggplot(ratio_ST_mid_df, aes(x=ST)) +
 
 theta_reg <- lm(est ~ res, data = theta_ST_mid_df)
 summary(theta_reg) # adj R-squared = 0.5164; regression s = 0.4304
-## figure out how to interpret beta hats
 
-# Fix this one
-# Add legends
 # df_0_mid <- data.frame(est = theta)
 ggplot(theta_ST_mid_df, aes(x=res, y=est)) +
   annotate("rect", xmin = 0, xmax = Inf, ymin = 0, ymax = Inf, fill = "dodgerblue", alpha = 0.6) +
@@ -390,7 +352,7 @@ ggplot(filter(theta_ST_mid_df, state != "Utah"), aes(x=res, y=est)) +
 
 cor(theta_ST_0_mid, theta_ST_0_res) # 0.744068
 cor(theta_ST_0_mid[-12], theta_ST_0_res[-12]) # 0.9249992
-# not as good as paper!
+# not as good as original paper
 
 boot_ST_SE <- sqrt(boot_ST_var)
 boot_ST_SE_med <- median(boot_ST_SE) # 0.2533542
@@ -640,7 +602,7 @@ cor(pred538$theta, theta_ST_0_res) # higher correlation = 0.8688282
 
 sqrt(mean((pred538$theta-theta_ST_0_res)^2)) # lower RMSE = 0.3348598
 
-# SEs for spread --> not sure how to do for theta
+# SEs for spread
 pred538 %>%
   mutate(SE = spread/qnorm(Biden/100))
 ```
