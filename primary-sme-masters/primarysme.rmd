@@ -23,8 +23,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 
 ```{r data format}
-## try this out with Super Tuesday states
-# first create ratio variable
+# first create ratio variable using Super Tuesday states data
 q_id_ST <- polls_ST %>%
     dplyr::select(question_id, start_date, end_date) %>%
     distinct() %>%
