@@ -346,6 +346,3 @@ shinyApp(
     }
 
 )
-
-# Run app
-#shinyApp(ui, server)
